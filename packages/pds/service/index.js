@@ -12,14 +12,11 @@ require('dd-trace/init') // Only works with commonjs
 // Tracer code above must come before anything else
 const path = require('path')
 const {
-  KmsKeypair,
-  S3BlobStore,
-  CloudfrontInvalidator,
-} = require('@atproto/aws')
-const {
   Database,
   ServerConfig,
   PDS,
+  DiskBlobStore,
+  appMigrations,
   ViewMaintainer,
   makeAlgos,
 } = require('@atproto/pds')
@@ -44,20 +41,15 @@ const main = async () => {
     poolMaxUses: env.dbPoolMaxUses,
     poolIdleTimeoutMs: env.dbPoolIdleTimeoutMs,
   })
-  const s3Blobstore = new S3BlobStore({ bucket: env.s3Bucket })
+  const pdsBlobstore = new DiskBlobStore(
+    env.blobStoreLoc,
+    env.blobStoreTmp,
+    null,
+  )
   const repoSigningKey = await Secp256k1Keypair.import(env.repoSigningKey)
-  const plcRotationKey = await KmsKeypair.load({
-    keyId: env.plcRotationKeyId,
-  })
-  let recoveryKey
-  if (env.recoveryKeyId.startsWith('did:')) {
-    recoveryKey = env.recoveryKeyId
-  } else {
-    const recoveryKeypair = await KmsKeypair.load({
-      keyId: env.recoveryKeyId,
-    })
-    recoveryKey = recoveryKeypair.did()
-  }
+  const plcRotationKey = await Secp256k1Keypair.import(env.plcRotationKey)
+  const recoveryKeypair = await Secp256k1Keypair.import(env.recoveryKey)
+  const recoveryKey = recoveryKeypair.did()
   const cfg = ServerConfig.readEnv({
     port: env.port,
     recoveryKey,
@@ -66,21 +58,27 @@ const main = async () => {
       username: env.smtpUsername,
       password: env.smtpPassword,
     }),
-  })
-  const cfInvalidator = new CloudfrontInvalidator({
-    distributionId: env.cfDistributionId,
-    pathPrefix: cfg.imgUriEndpoint && new URL(cfg.imgUriEndpoint).pathname,
+    publicUrl: env.publicUrl,
+    blobCacheLocation: env.blobCacheLoc,
   })
   const algos = env.feedPublisherDid ? makeAlgos(env.feedPublisherDid) : {}
   const pds = PDS.create({
     db,
-    blobstore: s3Blobstore,
+    blobstore: pdsBlobstore,
     repoSigningKey,
     plcRotationKey,
     config: cfg,
-    imgInvalidator: cfInvalidator,
+    imgInvalidator: null,
     algos,
   })
+  /*
+  await appMigrations.plcRotationKeysMigration(db, {
+    plcUrl: cfg.didPlcUrl,
+    oldRotationKey,
+    plcRotationKey,
+    recoveryKey,
+  })
+  */
   const viewMaintainer = new ViewMaintainer(migrateDb)
   const viewMaintainerRunning = viewMaintainer.run()
   await pds.start()
@@ -120,8 +118,10 @@ const maybeParseInt = (str) => {
 const getEnv = () => ({
   port: parseInt(process.env.PORT),
   plcRotationKeyId: process.env.PLC_ROTATION_KEY_ID,
+  plcRotationKey: process.env.PLC_ROTATION_KEY,
   repoSigningKey: process.env.REPO_SIGNING_KEY,
   recoveryKeyId: process.env.RECOVERY_KEY_ID,
+  recoveryKey: process.env.RECOVERY_KEY,
   dbCreds: JSON.parse(process.env.DB_CREDS_JSON),
   dbMigrateCreds: JSON.parse(process.env.DB_MIGRATE_CREDS_JSON),
   dbSchema: process.env.DB_SCHEMA || undefined,
@@ -132,6 +132,10 @@ const getEnv = () => ({
   smtpUsername: process.env.SMTP_USERNAME,
   smtpPassword: process.env.SMTP_PASSWORD,
   s3Bucket: process.env.S3_BUCKET_NAME,
+  blobStoreLoc: process.env.BLOBSTORE_LOC,
+  blobStoreTmp: process.env.BLOBSTORE_TMP,
+  blobCacheLoc: process.env.BLOB_CACHE_LOC,
+  publicUrl: process.env.PUBLIC_URL,
   cfDistributionId: process.env.CF_DISTRIBUTION_ID,
   feedPublisherDid: process.env.FEED_PUBLISHER_DID,
 })
