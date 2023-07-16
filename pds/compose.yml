@@ -1,0 +1,50 @@
+version: '3.9'
+services:
+  db:
+    container_name: db
+    image: postgres:15.3-alpine3.18
+    network_mode: host
+    volumes:
+      - db-store:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_PASSWORD=password
+  caddy:
+    container_name: caddy
+    image: caddy:2
+    network_mode: host
+    depends_on:
+      - pds
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /pds/caddy/data
+        target: /data
+      - type: bind
+        source: /pds/caddy/etc/caddy
+        target: /etc/caddy
+  pds:
+    container_name: pds
+    image: sacckey/atproto:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: /pds
+        target: /pds
+    env_file:
+      - /pds/pds.env
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower:latest
+    network_mode: host
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    restart: unless-stopped
+    environment:
+      TZ: "US/Pacific"
+      WATCHTOWER_CLEANUP: true
+      WATCHTOWER_SCHEDULE: "@midnight"
+volumes:
+  db-store:
